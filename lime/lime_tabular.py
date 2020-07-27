@@ -20,7 +20,8 @@ from lime.discretize import BaseDiscretizer
 from lime.discretize import StatsDiscretizer
 from . import explanation
 from . import lime_base
-
+import time
+from scipy.stats import norm
 
 class TableDomainMapper(explanation.DomainMapper):
     """Maps feature ids to names, generates table views, etc"""
@@ -337,64 +338,63 @@ class LimeTabularExplainer(object):
         if sp.sparse.issparse(data_row) and not sp.sparse.isspmatrix_csr(data_row):
             # Preventative code: if sparse, convert to csr format if not in csr format already
             data_row = data_row.tocsr()
-        data, inverse = self.__data_inverse(data_row, num_samples)
-        if sp.sparse.issparse(data):
-            # Note in sparse case we don't subtract mean since data would become dense
-            scaled_data = data.multiply(self.scaler.scale_)
-            # Multiplying with csr matrix can return a coo sparse matrix
-            if not sp.sparse.isspmatrix_csr(scaled_data):
-                scaled_data = scaled_data.tocsr()
-        else:
-            scaled_data = (data - self.scaler.mean_) / self.scaler.scale_
-        distances = sklearn.metrics.pairwise_distances(
-                scaled_data,
-                scaled_data[0].reshape(1, -1),
-                metric=distance_metric
-        ).ravel()
-
-        yss = predict_fn(inverse)
+        data, inverse, scaled_data = self.__data_inverse(data_row, num_samples)
+        # if sp.sparse.issparse(data):
+        #     # Note in sparse case we don't subtract mean since data would become dense
+        #     scaled_data = data.multiply(self.scaler.scale_)
+        #     # Multiplying with csr matrix can return a coo sparse matrix
+        #     if not sp.sparse.isspmatrix_csr(scaled_data):
+        #         scaled_data = scaled_data.tocsr()
+        # else:
+        #     scaled_data = (data - self.scaler.mean_) / self.scaler.scale_
+        # distances = sklearn.metrics.pairwise_distances(
+        #         scaled_data,
+        #         scaled_data[0].reshape(1, -1),
+        #         metric=distance_metric
+        # ).ravel()
+        # yss = predict_fn(inverse)
 
         # for classification, the model needs to provide a list of tuples - classes
         # along with prediction probabilities
-        if self.mode == "classification":
-            if len(yss.shape) == 1:
-                raise NotImplementedError("LIME does not currently support "
-                                          "classifier models without probability "
-                                          "scores. If this conflicts with your "
-                                          "use case, please let us know: "
-                                          "https://github.com/datascienceinc/lime/issues/16")
-            elif len(yss.shape) == 2:
-                if self.class_names is None:
-                    self.class_names = [str(x) for x in range(yss[0].shape[0])]
-                else:
-                    self.class_names = list(self.class_names)
-                if not np.allclose(yss.sum(axis=1), 1.0):
-                    warnings.warn("""
-                    Prediction probabilties do not sum to 1, and
-                    thus does not constitute a probability space.
-                    Check that you classifier outputs probabilities
-                    (Not log probabilities, or actual class predictions).
-                    """)
-            else:
-                raise ValueError("Your model outputs "
-                                 "arrays with {} dimensions".format(len(yss.shape)))
+        # if self.mode == "classification":
+        #     if len(yss.shape) == 1:
+        #         raise NotImplementedError("LIME does not currently support "
+        #                                   "classifier models without probability "
+        #                                   "scores. If this conflicts with your "
+        #                                   "use case, please let us know: "
+        #                                   "https://github.com/datascienceinc/lime/issues/16")
+        #     elif len(yss.shape) == 2:
+        #         if self.class_names is None:
+        #             self.class_names = [str(x) for x in range(yss[0].shape[0])]
+        #         else:
+        #             self.class_names = list(self.class_names)
+        #         if not np.allclose(yss.sum(axis=1), 1.0):
+        #             warnings.warn("""
+        #             Prediction probabilties do not sum to 1, and
+        #             thus does not constitute a probability space.
+        #             Check that you classifier outputs probabilities
+        #             (Not log probabilities, or actual class predictions).
+        #             """)
+        #     else:
+        #         raise ValueError("Your model outputs "
+        #                          "arrays with {} dimensions".format(len(yss.shape)))
 
         # for regression, the output should be a one-dimensional array of predictions
-        else:
-            try:
-                if len(yss.shape) != 1 and len(yss[0].shape) == 1:
-                    yss = np.array([v[0] for v in yss])
-                assert isinstance(yss, np.ndarray) and len(yss.shape) == 1
-            except AssertionError:
-                raise ValueError("Your model needs to output single-dimensional \
-                    numpyarrays, not arrays of {} dimensions".format(yss.shape))
+        #else:
+        #    try:
+        #        if len(yss.shape) != 1 and len(yss[0].shape) == 1:
+        #            yss = np.array([v[0] for v in yss])
+        #        assert isinstance(yss, np.ndarray) and len(yss.shape) == 1
+        #    except AssertionError:
+        #       raise ValueError("Your model needs to output single-dimensional \
+        #            numpyarrays, not arrays of {} dimensions".format(yss.shape))
 
-            predicted_value = yss[0]
-            min_y = min(yss)
-            max_y = max(yss)
+            # predicted_value = yss[0]
+            # min_y = min(yss)
+            # max_y = max(yss)
 
             # add a dimension to be compatible with downstream machinery
-            yss = yss[:, np.newaxis]
+            # yss = yss[:, np.newaxis]
 
         feature_names = copy.deepcopy(self.feature_names)
         if feature_names is None:
@@ -435,26 +435,29 @@ class LimeTabularExplainer(object):
         ret_exp = explanation.Explanation(domain_mapper,
                                           mode=self.mode,
                                           class_names=self.class_names)
-        if self.mode == "classification":
-            ret_exp.predict_proba = yss[0]
-            if top_labels:
-                labels = np.argsort(yss[0])[-top_labels:]
-                ret_exp.top_labels = list(labels)
-                ret_exp.top_labels.reverse()
-        else:
-            ret_exp.predicted_value = predicted_value
-            ret_exp.min_value = min_y
-            ret_exp.max_value = max_y
-            labels = [0]
+        # if self.mode == "classification":
+        #     ret_exp.predict_proba = yss[0]
+        #     if top_labels:
+        #         labels = np.argsort(yss[0])[-top_labels:]
+        #         ret_exp.top_labels = list(labels)
+        #         ret_exp.top_labels.reverse()
+        # else:
+        #     ret_exp.predicted_value = predicted_value
+        #     ret_exp.min_value = min_y
+        #     ret_exp.max_value = max_y
+        #     labels = [0]
         for label in labels:
             (ret_exp.intercept[label],
              ret_exp.local_exp[label],
              ret_exp.score, ret_exp.local_pred) = self.base.explain_instance_with_data(
+                    data,
                     scaled_data,
-                    yss,
-                    distances,
+                    #yss,
+                    #distances,
                     label,
                     num_features,
+                    predict_fn,
+                    inverse,
                     model_regressor=model_regressor,
                     feature_selection=self.feature_selection)
 
@@ -497,39 +500,48 @@ class LimeTabularExplainer(object):
             num_cols = data_row.shape[0]
             data = np.zeros((num_samples, num_cols))
         categorical_features = range(num_cols)
-        if self.discretizer is None:
+        #if self.discretizer is None:
+        if True:
             instance_sample = data_row
             scale = self.scaler.scale_
             mean = self.scaler.mean_
-            if is_sparse:
-                # Perturb only the non-zero values
-                non_zero_indexes = data_row.nonzero()[1]
-                num_cols = len(non_zero_indexes)
-                instance_sample = data_row[:, non_zero_indexes]
-                scale = scale[non_zero_indexes]
-                mean = mean[non_zero_indexes]
-            data = self.random_state.normal(
-                0, 1, num_samples * num_cols).reshape(
-                num_samples, num_cols)
+            # if is_sparse:
+            #     # Perturb only the non-zero values
+            #     non_zero_indexes = data_row.nonzero()[1]
+            #     num_cols = len(non_zero_indexes)
+            #     instance_sample = data_row[:, non_zero_indexes]
+            #     scale = scale[non_zero_indexes]
+            #     mean = mean[non_zero_indexes]
+            # data = self.random_state.normal(
+            #     0, 1, num_samples * num_cols).reshape(
+            #     num_samples, num_cols)
+            x =np.linspace(1/(num_samples),1-1/(num_samples), num_samples-1)
+            y = norm.ppf(x)
+
+            #CUSTOM
+            data = np.zeros([num_samples, num_cols]).reshape(num_samples, num_cols)
+            for i in range(0, num_cols):
+                data[1:,i] = y
+            scaled_data = data.copy()
             if self.sample_around_instance:
                 data = data * scale + instance_sample
             else:
                 data = data * scale + mean
-            if is_sparse:
-                if num_cols == 0:
-                    data = sp.sparse.csr_matrix((num_samples,
-                                                 data_row.shape[1]),
-                                                dtype=data_row.dtype)
-                else:
-                    indexes = np.tile(non_zero_indexes, num_samples)
-                    indptr = np.array(
-                        range(0, len(non_zero_indexes) * (num_samples + 1),
-                              len(non_zero_indexes)))
-                    data_1d_shape = data.shape[0] * data.shape[1]
-                    data_1d = data.reshape(data_1d_shape)
-                    data = sp.sparse.csr_matrix(
-                        (data_1d, indexes, indptr),
-                        shape=(num_samples, data_row.shape[1]))
+            # if is_sparse:
+            #     if num_cols == 0:
+            #         data = sp.sparse.csr_matrix((num_samples,
+            #                                      data_row.shape[1]),
+            #                                     dtype=data_row.dtype)
+            #     else:
+            #         indexes = np.tile(non_zero_indexes, num_samples)
+            #         indptr = np.array(
+            #             range(0, len(non_zero_indexes) * (num_samples + 1),
+            #                   len(non_zero_indexes)))
+            #         data_1d_shape = data.shape[0] * data.shape[1]
+            #         data_1d = data.reshape(data_1d_shape)
+            #         data = sp.sparse.csr_matrix(
+            #             (data_1d, indexes, indptr),
+            #             shape=(num_samples, data_row.shape[1]))
             categorical_features = self.categorical_features
             first_row = data_row
         else:
@@ -537,19 +549,19 @@ class LimeTabularExplainer(object):
         data[0] = data_row.copy()
         inverse = data.copy()
         for column in categorical_features:
-            values = self.feature_values[column]
-            freqs = self.feature_frequencies[column]
+            values = self.feature_values[column] #encode feature into decile
+            freqs = self.feature_frequencies[column] #uniformly distributed in decile
             inverse_column = self.random_state.choice(values, size=num_samples,
                                                       replace=True, p=freqs)
             binary_column = (inverse_column == first_row[column]).astype(int)
             binary_column[0] = 1
             inverse_column[0] = data[0, column]
-            data[:, column] = binary_column
+            #data[:, column] = binary_column
             inverse[:, column] = inverse_column
-        if self.discretizer is not None:
-            inverse[1:] = self.discretizer.undiscretize(inverse[1:])
+#        if self.discretizer is not None:
+#            inverse[1:] = self.discretizer.undiscretize(inverse[1:])
         inverse[0] = data_row
-        return data, inverse
+        return data, inverse, scaled_data
 
 
 class RecurrentTabularExplainer(LimeTabularExplainer):

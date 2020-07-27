@@ -5,7 +5,8 @@ import numpy as np
 import scipy as sp
 from sklearn.linear_model import Ridge, lars_path
 from sklearn.utils import check_random_state
-
+from sklearn.metrics.pairwise import pairwise_distances
+from scipy.stats import norm
 
 class LimeBase(object):
     """Class for learning a locally linear sparse model from perturbed data"""
@@ -136,10 +137,13 @@ class LimeBase(object):
 
     def explain_instance_with_data(self,
                                    neighborhood_data,
-                                   neighborhood_labels,
-                                   distances,
+                                   scaled_data,
+                                   #neighborhood_labels,
+                                   #distances,
                                    label,
                                    num_features,
+                                   predict_fn,
+                                   inverse,
                                    feature_selection='auto',
                                    model_regressor=None):
         """Takes perturbed data, labels and distances, returns explanation.
@@ -177,31 +181,69 @@ class LimeBase(object):
             score is the R^2 value of the returned explanation
             local_pred is the prediction of the explanation model on the original instance
         """
-
-        weights = self.kernel_fn(distances)
+        neighborhood_labels = predict_fn(neighborhood_data)
+        #weights = self.kernel_fn(distances)
         labels_column = neighborhood_labels[:, label]
-        used_features = self.feature_selection(neighborhood_data,
-                                               labels_column,
-                                               weights,
-                                               num_features,
-                                               feature_selection)
+#        used_features = self.feature_selection(neighborhood_data,
+#                                               labels_column,
+#                                               weights,
+#                                               num_features,
+#                                               feature_selection)
+        used_features = np.arange(0,num_features)
         if model_regressor is None:
             model_regressor = Ridge(alpha=1, fit_intercept=True,
                                     random_state=self.random_state)
         easy_model = model_regressor
-        easy_model.fit(neighborhood_data[:, used_features],
-                       labels_column, sample_weight=weights)
-        prediction_score = easy_model.score(
-            neighborhood_data[:, used_features],
-            labels_column, sample_weight=weights)
+        #CUSTOM
+        first_row = neighborhood_data[0:1][0]
+        num_samp = neighborhood_data.shape[0]
+        first_row_clone = np.array([first_row,]*num_samp)
+        coef_lm = []
 
-        local_pred = easy_model.predict(neighborhood_data[0, used_features].reshape(1, -1))
+        #first_row_inverse = np.array([inverse[0:1][0],]*num_samp)
+        first_row_scaled_clone = np.array([scaled_data[0:1][0],]*num_samp)
 
-        if self.verbose:
-            print('Intercept', easy_model.intercept_)
-            print('Prediction_local', local_pred,)
-            print('Right:', neighborhood_labels[0, label])
+        #create samples from a fixed pdf distribution
+        print(f"-----------------inside lime_base.py")
+        for i in range(0,num_features):
+
+            #tmp_inverse = first_row_inverse.copy()
+            #tmp_inverse[:,i] = inverse[:,i]
+            #tmp_neighborhood_labels = predict_fn(tmp_inverse)
+            #tmp_labels_column = tmp_neighborhood_labels[:, label]
+            #distances_tmp = pairwise_distances(tmp_inverse,tmp_inverse[0].reshape(1, -1),metric='euclidean').ravel()
+            #weights_tmp = self.kernel_fn(distances_tmp)
+
+            tmp = first_row_clone.copy()
+            tmp[:,i] = neighborhood_data[:,i]
+            scale_tmp = first_row_scaled_clone.copy()
+            scale_tmp[:,i] = scaled_data[:,i]
+            distances_tmp = pairwise_distances(scaled_data,scale_tmp[0].reshape(1, -1), metric='euclidean').ravel()
+            weights_tmp = self.kernel_fn(distances_tmp)
+            tmp_neighborhood_labels = predict_fn(tmp)
+            tmp_labels_column = tmp_neighborhood_labels[:, label]
+            easy_model.fit(scale_tmp[:,i].reshape(-1,1),tmp_labels_column, sample_weight=weights_tmp)
+            #easy_model.fit(tmp_inverse[:, :],tmp_labels_column, sample_weight=weights_tmp)
+            coef_lm.append(easy_model.coef_[0])
+#        easy_model.fit(neighborhood_data[:, used_features],
+#                       labels_column, sample_weight=weights)
+#        prediction_score = easy_model.score(
+#            neighborhood_data[:, used_features],
+#            labels_column, sample_weight=weights)
+#         prediction_score = easy_model.score(neighborhood_data[:, :],tmp_labels_column, sample_weight=weights_tmp)
+#         local_pred = easy_model.predict(neighborhood_data[0, used_features].reshape(1, -1))
+        prediction_score = easy_model.score(scale_tmp[:,i].reshape(-1,1),tmp_labels_column, sample_weight=weights_tmp)
+        local_pred = easy_model.predict(neighborhood_data[:, i].reshape(-1,1))
+
+#        if self.verbose:
+#            print('Intercept', easy_model.intercept_)
+#            print('Prediction_local', local_pred,)
+#            print('Right:', neighborhood_labels[0, label])
+#        return (easy_model.intercept_,
+#                sorted(zip(used_features, easy_model.coef_),
+#                       key=lambda x: np.abs(x[1]), reverse=True),
+#                prediction_score, local_pred)
         return (easy_model.intercept_,
-                sorted(zip(used_features, easy_model.coef_),
-                       key=lambda x: np.abs(x[1]), reverse=True),
-                prediction_score, local_pred)
+                    sorted(zip(used_features, coef_lm),
+                           key=lambda x: np.abs(x[1]), reverse=True),
+                    prediction_score, local_pred)
